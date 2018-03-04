@@ -1,5 +1,4 @@
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 // A `Pointer` is just a smart pointer represented as one word.

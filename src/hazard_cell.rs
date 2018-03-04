@@ -1,5 +1,4 @@
 
-use std::ptr;
 use std::sync::atomic::{AtomicUsize, AtomicPtr, AtomicBool, Ordering};
 use std::marker::PhantomData;
 use pointer::Pointer;
@@ -31,7 +30,7 @@ impl<T: Pointer> HazardCell<T> {
             let inner = self.inner.load(Ordering::SeqCst);
 
             unsafe {
-                let slot = unsafe { &*slot };
+                let slot = &*slot;
                 slot.store(inner, Ordering::SeqCst);
             }
 
@@ -57,7 +56,7 @@ impl<T: Pointer> Drop for HazardCell<T> {
         //    an element.
 
         if !registry().try_transfer_drop_responsibility(self.inner.load(Ordering::SeqCst)) {
-            let _dropper = unsafe { T::from_raw(self.inner.load(Ordering::SeqCst)) };
+            unsafe { drop(T::from_raw(self.inner.load(Ordering::SeqCst))) }
         }
     }
 }
@@ -76,13 +75,13 @@ impl<T: Pointer> Drop for HazardGuard<T> {
         // 2) Just remove hazard pointer
 
         unsafe {
-            let slot = unsafe { &(*self.slot) };
+            let slot = &(*self.slot);
 
             if slot.swap(0, Ordering::SeqCst) != self.inner {
                 // Here we know that drop responsibility has been transfered to us
                 
                 if !registry().try_transfer_drop_responsibility(self.inner) {
-                    let _dropper = T::from_raw(self.inner);
+                    drop( T::from_raw(self.inner) )
                 }
             }
         }
@@ -111,7 +110,7 @@ fn try_extend_registry(ptr: &AtomicPtr<Registry>) {
 
     if !ptr.compare_exchange(0 as *mut Registry, instance, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
         // Some other thread has successfully extended Registry. It is our job now to delete `instance` we have just created.
-        let _dropper = unsafe { Box::from_raw(instance) };
+        unsafe { drop(Box::from_raw(instance)) }
     }
 }
 
@@ -169,7 +168,7 @@ impl ThreadEntry {
     }
 
     fn allocate_hazard_slot(&self) -> HazardSlot {
-        for (idx, hazard) in self.hazards.iter().enumerate() {
+        for hazard in self.hazards.iter() {
             if hazard.load(Ordering::SeqCst) == 0 {
                 return hazard as *const _;
             }
