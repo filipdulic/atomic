@@ -58,7 +58,7 @@ impl<T: Pointer> Drop for HazardCell<T> {
 
 struct HazardGuard<T: Pointer> {
     inner: usize,
-    thread_entry: *mut ThreadEntry,
+    thread_entry: *const ThreadEntry,
     index: usize,
     _marker: PhantomData<T>,
 }
@@ -108,7 +108,7 @@ fn try_extend_registry(ptr: &AtomicPtr<Registry>) {
     }
 }
 
-fn registry() -> &'static mut Registry {
+fn registry() -> &'static Registry {
     let mut reg_ptr = REGISTRY.load(Ordering::SeqCst);
 
     if reg_ptr as usize == 0 {
@@ -116,16 +116,15 @@ fn registry() -> &'static mut Registry {
         reg_ptr = REGISTRY.load(Ordering::SeqCst);
     }
 
-    unsafe { &mut (*reg_ptr) }
+    unsafe { &(*reg_ptr) }
 }
 
 impl Registry {
-    fn register(&mut self) -> *mut ThreadEntry {
-        for idx in 0..self.entries.len() {
-            let entry = &mut self.entries[idx];
+    fn register(&self) -> *const ThreadEntry {
+        for entry in self.entries.iter() {
             if !entry.in_use.load(Ordering::SeqCst) {
                 if entry.in_use.compare_and_swap(false, true, Ordering::SeqCst) == false {
-                    return entry as *mut ThreadEntry;
+                    return entry as *const ThreadEntry;
                 }
             }
         }
@@ -140,9 +139,8 @@ impl Registry {
         unsafe { (*next).register() }
     }
 
-    fn try_transfer_drop_responsibility(&mut self, ptr: usize) -> bool {
-        for idx in 0..self.entries.len() {
-            let entry = &mut self.entries[idx];
+    fn try_transfer_drop_responsibility(&self, ptr: usize) -> bool {
+        for entry in self.entries.into_iter() {
             if entry.in_use.load(Ordering::SeqCst) {
                 if entry.try_transfer_drop_responsibility(ptr) {
                     return true;
@@ -151,32 +149,24 @@ impl Registry {
         }
         unsafe {
             let next = self.next.load(Ordering::SeqCst);
-            return if next as usize != 0 { (*(next as *mut Registry)).try_transfer_drop_responsibility(ptr) } else { false }
+            return if next as usize != 0 { (*(next as *const Registry)).try_transfer_drop_responsibility(ptr) } else { false }
         }
     }
 }
 
-type HazardSlot = (*mut ThreadEntry, usize);
+type HazardSlot = (*const ThreadEntry, usize);
 
 impl ThreadEntry {
-    fn unregister(&mut self) {
+    fn unregister(&self) {
         self.in_use.store(false, Ordering::SeqCst)
     }
 
-    fn set_hazard(&mut self, ptr: usize) -> HazardSlot {
-        let mut free_slot = None;
-
-        for idx in 0..self.hazards.len() {
-            let hazard = &mut self.hazards[idx];
+    fn set_hazard(&self, ptr: usize) -> HazardSlot {
+        for (idx, hazard) in self.hazards.into_iter().enumerate() {
             if hazard.load(Ordering::SeqCst) == 0 {
                 hazard.store(ptr, Ordering::SeqCst);
-                free_slot = Some(idx);
-                break;
+                return (self as *const Self, idx);
             }
-        }
-
-        if let Some(idx) = free_slot {
-            return (self as *mut Self, idx);
         }
 
         let mut next = self.next.load(Ordering::SeqCst);
@@ -190,11 +180,11 @@ impl ThreadEntry {
         unsafe { (*next).set_hazard(ptr) }
     }
 
-    fn try_unset_hazard(&mut self, index: usize, expected_ptr: usize) -> bool {
+    fn try_unset_hazard(&self, index: usize, expected_ptr: usize) -> bool {
         self.hazards[index].compare_and_swap(expected_ptr, 0, Ordering::SeqCst) == expected_ptr
     }
 
-    fn try_transfer_drop_responsibility(&mut self, ptr: usize) -> bool {
+    fn try_transfer_drop_responsibility(&self, ptr: usize) -> bool {
         for hazard in self.hazards.into_iter() {
             if hazard.load(Ordering::SeqCst) == ptr {
                 hazard.store(0, Ordering::SeqCst);
@@ -206,7 +196,7 @@ impl ThreadEntry {
 }
 
 struct Harness {
-    entry: *mut ThreadEntry,
+    entry: *const ThreadEntry,
 }
 
 thread_local! {
