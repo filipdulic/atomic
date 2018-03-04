@@ -129,7 +129,7 @@ impl Registry {
     fn register(&self) -> *const ThreadEntry {
         for entry in self.entries.iter() {
             if !entry.in_use.load(Ordering::SeqCst) {
-                if entry.in_use.compare_and_swap(false, true, Ordering::SeqCst) == false {
+                if entry.in_use.swap(true, Ordering::SeqCst) == false {
                     return entry as *const ThreadEntry;
                 }
             }
