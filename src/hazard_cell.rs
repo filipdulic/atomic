@@ -19,20 +19,26 @@ impl<T: Pointer> HazardCell<T> {
     }
 
     fn into_inner(self) -> T {
-        unsafe { ptr::read(self.inner.load(Ordering::SeqCst) as *const T) }
+        unsafe { T::from_raw(self.inner.load(Ordering::SeqCst)) }
     }
 
     fn get(&self) -> HazardGuard<T> {
         // We have to set a hazard pointer to to ThreadEntry first and only then return.
 
+        let slot = HARNESS.with(|harness| harness.allocate_hazard_slot());
+
         loop {
             let inner = self.inner.load(Ordering::SeqCst);
-            let (thread_entry, index) = HARNESS.with(|harness| harness.set_hazard(inner));
+
+            unsafe {
+                let slot = unsafe { &*slot };
+                slot.store(inner, Ordering::SeqCst);
+            }
+
             if self.inner.load(Ordering::SeqCst) == inner {
                 return HazardGuard {
                     inner: inner,
-                    thread_entry: thread_entry,
-                    index: index,
+                    slot: slot,
                     _marker: PhantomData,
                 }
             }
@@ -58,8 +64,7 @@ impl<T: Pointer> Drop for HazardCell<T> {
 
 struct HazardGuard<T: Pointer> {
     inner: usize,
-    thread_entry: *const ThreadEntry,
-    index: usize,
+    slot: HazardSlot,
     _marker: PhantomData<T>,
 }
 
@@ -71,7 +76,9 @@ impl<T: Pointer> Drop for HazardGuard<T> {
         // 2) Just remove hazard pointer
 
         unsafe {
-            if !(*self.thread_entry).try_unset_hazard(self.index, self.inner) {
+            let slot = unsafe { &(*self.slot) };
+
+            if slot.swap(0, Ordering::SeqCst) != self.inner {
                 // Here we know that drop responsibility has been transfered to us
                 
                 if !registry().try_transfer_drop_responsibility(self.inner) {
@@ -140,7 +147,7 @@ impl Registry {
     }
 
     fn try_transfer_drop_responsibility(&self, ptr: usize) -> bool {
-        for entry in self.entries.into_iter() {
+        for entry in self.entries.iter() {
             if entry.in_use.load(Ordering::SeqCst) {
                 if entry.try_transfer_drop_responsibility(ptr) {
                     return true;
@@ -154,18 +161,17 @@ impl Registry {
     }
 }
 
-type HazardSlot = (*const ThreadEntry, usize);
+type HazardSlot = *const AtomicUsize;
 
 impl ThreadEntry {
     fn unregister(&self) {
         self.in_use.store(false, Ordering::SeqCst)
     }
 
-    fn set_hazard(&self, ptr: usize) -> HazardSlot {
-        for (idx, hazard) in self.hazards.into_iter().enumerate() {
+    fn allocate_hazard_slot(&self) -> HazardSlot {
+        for (idx, hazard) in self.hazards.iter().enumerate() {
             if hazard.load(Ordering::SeqCst) == 0 {
-                hazard.store(ptr, Ordering::SeqCst);
-                return (self as *const Self, idx);
+                return hazard as *const _;
             }
         }
 
@@ -177,15 +183,11 @@ impl ThreadEntry {
             next = new_entry;
         }
 
-        unsafe { (*next).set_hazard(ptr) }
-    }
-
-    fn try_unset_hazard(&self, index: usize, expected_ptr: usize) -> bool {
-        self.hazards[index].compare_and_swap(expected_ptr, 0, Ordering::SeqCst) == expected_ptr
+        unsafe { (*next).allocate_hazard_slot() }
     }
 
     fn try_transfer_drop_responsibility(&self, ptr: usize) -> bool {
-        for hazard in self.hazards.into_iter() {
+        for hazard in self.hazards.iter() {
             if hazard.load(Ordering::SeqCst) == ptr {
                 hazard.store(0, Ordering::SeqCst);
                 return true;
@@ -210,8 +212,8 @@ impl Harness {
         }
     }
 
-    fn set_hazard(&self, ptr: usize) -> HazardSlot {
-        unsafe { (*self.entry).set_hazard(ptr) }
+    fn allocate_hazard_slot(&self) -> HazardSlot {
+        unsafe { (*self.entry).allocate_hazard_slot() }
     }
 }
 
