@@ -28,26 +28,6 @@ unsafe impl<T> Pointer for Option<Box<T>> {
     }
 }
 
-unsafe impl<T> Pointer for Rc<T> {
-    fn into_raw(self) -> usize {
-        Rc::into_raw(self) as usize
-    }
-
-    unsafe fn from_raw(raw: usize) -> Self {
-        Rc::from_raw(raw as *mut T)
-    }
-}
-
-unsafe impl<T> Pointer for Option<Rc<T>> {
-    fn into_raw(self) -> usize {
-        self.map_or(0, |ptr| Rc::into_raw(ptr) as usize)
-    }
-
-    unsafe fn from_raw(raw: usize) -> Self {
-        if raw == 0 { None } else { Some(Rc::from_raw(raw as *mut T)) }
-    }
-}
-
 unsafe impl<T> Pointer for Arc<T> {
     fn into_raw(self) -> usize {
         Arc::into_raw(self) as usize
