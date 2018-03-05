@@ -109,7 +109,8 @@ fn try_extend_registry(ptr: &AtomicPtr<Registry>) {
     let instance = Box::into_raw(Box::new(Registry::default()));
 
     if !ptr.compare_exchange(0 as *mut Registry, instance, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-        // Some other thread has successfully extended Registry. It is our job now to delete `instance` we have just created.
+        // Some other thread has successfully extended Registry. 
+        // It is our job now to delete `instance` we have just created.
         unsafe { drop(Box::from_raw(instance)) }
     }
 }
@@ -155,7 +156,12 @@ impl Registry {
         }
         unsafe {
             let next = self.next.load(Ordering::SeqCst);
-            return if next as usize != 0 { (*(next as *const Registry)).try_transfer_drop_responsibility(ptr) } else { false }
+
+            if next as usize != 0 {
+                (*(next as *const Registry)).try_transfer_drop_responsibility(ptr)
+            } else {
+                false
+            }
         }
     }
 }
