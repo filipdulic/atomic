@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, AtomicPtr, AtomicBool, Ordering};
 use std::marker::PhantomData;
 use pointer::Pointer;
 use std::ops::Deref;
+use std::ptr;
 
 pub struct HazardCell<T: Pointer> {
     // `T` is just a pointer, so it is representable as a `usize`.
@@ -51,7 +52,7 @@ impl<T: Pointer> HazardCell<T> {
 
         HazardGuard {
             inner: old_raw,
-            slot: 0 as HazardSlot,
+            slot: ptr::null(),
             _marker: PhantomData,
         }
     }
@@ -97,11 +98,10 @@ impl<T: Pointer> Drop for HazardGuard<T> {
         //    - Transfer the responsibility to somebody else
         //    - Delete it
         // 2) Just remove hazard pointer
-        //
         // 3) Pointer to slot is null, therefore we can drop right away
 
         unsafe {
-            if self.slot as usize == 0 {
+            if self.slot.is_null() {
                 drop(T::from_raw(self.inner))
             } else {
                 let slot = &(*self.slot);
@@ -147,7 +147,7 @@ fn try_extend_registry(ptr: &AtomicPtr<Registry>) {
 fn registry() -> &'static Registry {
     let mut reg_ptr = REGISTRY.load(Ordering::SeqCst);
 
-    if reg_ptr as usize == 0 {
+    if reg_ptr.is_null() {
         try_extend_registry(&REGISTRY);
         reg_ptr = REGISTRY.load(Ordering::SeqCst);
     }
@@ -167,7 +167,7 @@ impl Registry {
 
         let mut next = self.next.load(Ordering::SeqCst);
 
-        if next as usize == 0 {
+        if next.is_null() {
             try_extend_registry(&self.next);
             next = self.next.load(Ordering::SeqCst);
         }
@@ -186,7 +186,7 @@ impl Registry {
         unsafe {
             let next = self.next.load(Ordering::SeqCst);
 
-            if next as usize != 0 {
+            if !next.is_null() {
                 (*(next as *const Registry)).try_transfer_drop_responsibility(ptr)
             } else {
                 false
@@ -211,7 +211,7 @@ impl ThreadEntry {
 
         let mut next = self.next.load(Ordering::SeqCst);
 
-        if next as usize == 0 {
+        if next.is_null() {
             let new_entry = Box::into_raw(Box::new(ThreadEntry::default()));
             self.next.store(new_entry, Ordering::SeqCst);
             next = new_entry;

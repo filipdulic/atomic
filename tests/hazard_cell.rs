@@ -7,13 +7,13 @@ use atomic::hazard_cell::HazardCell;
 static DROP_PER_THREAD: usize = 1000000;
 static N_THREADS: usize = 8;
 
-static mut DROP_CNT: AtomicUsize = AtomicUsize::new(0);
+static DROP_CNT: AtomicUsize = AtomicUsize::new(0);
 
 struct Foo(AtomicUsize);
 
 impl Drop for Foo {
     fn drop(&mut self) {
-        unsafe { DROP_CNT.fetch_add(1, Ordering::SeqCst); }
+        DROP_CNT.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -35,8 +35,6 @@ fn test_replace() {
         }
     });
 
-    unsafe {
-        assert_eq!(DROP_CNT.load(Ordering::Relaxed), N_THREADS * DROP_PER_THREAD);
-    }
+    assert_eq!(DROP_CNT.load(Ordering::Relaxed), N_THREADS * DROP_PER_THREAD);
 }
 
