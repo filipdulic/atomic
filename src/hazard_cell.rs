@@ -2,29 +2,30 @@
 use std::sync::atomic::{AtomicUsize, AtomicPtr, AtomicBool, Ordering};
 use std::marker::PhantomData;
 use pointer::Pointer;
+use std::ops::Deref;
 
-struct HazardCell<T: Pointer> {
+pub struct HazardCell<T: Pointer> {
     // `T` is just a pointer, so it is representable as a `usize`.
     inner: AtomicUsize,
     _marker: PhantomData<T>,
 }
 
 impl<T: Pointer> HazardCell<T> {
-    fn new(val: T) -> Self {
+    pub fn new(val: T) -> Self {
         HazardCell {
             inner: AtomicUsize::new(val.into_raw()),
             _marker: PhantomData,
         }
     }
 
-    fn into_inner(self) -> T {
+    pub fn into_inner(self) -> T {
         unsafe { T::from_raw(self.inner.load(Ordering::SeqCst)) }
     }
 
-    fn get(&self) -> HazardGuard<T> {
+    pub fn get(&self) -> HazardGuard<T> {
         // We have to set a hazard pointer to to ThreadEntry first and only then return.
 
-        let slot = HARNESS.with(|harness| harness.allocate_hazard_slot());
+        let slot = Self::allocate_hazard_slot();
 
         loop {
             let inner = self.inner.load(Ordering::SeqCst);
@@ -42,6 +43,21 @@ impl<T: Pointer> HazardCell<T> {
                 }
             }
         }
+    }
+
+    pub fn replace(&self, new_val: T) -> HazardGuard<T> {
+        let new_raw = new_val.into_raw();
+        let old_raw = self.inner.swap(new_raw, Ordering::SeqCst);
+
+        HazardGuard {
+            inner: old_raw,
+            slot: 0 as HazardSlot,
+            _marker: PhantomData,
+        }
+    }
+
+    fn allocate_hazard_slot() -> HazardSlot {
+        HARNESS.with(|harness| harness.allocate_hazard_slot())
     }
 }
 
@@ -61,10 +77,18 @@ impl<T: Pointer> Drop for HazardCell<T> {
     }
 }
 
-struct HazardGuard<T: Pointer> {
+pub struct HazardGuard<T: Pointer> {
     inner: usize,
     slot: HazardSlot,
     _marker: PhantomData<T>,
+}
+
+impl<T: Pointer> Deref for HazardGuard<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        unsafe { &*(self.inner as *const T) }
+    }
 }
 
 impl<T: Pointer> Drop for HazardGuard<T> {
@@ -73,15 +97,20 @@ impl<T: Pointer> Drop for HazardGuard<T> {
         //    - Transfer the responsibility to somebody else
         //    - Delete it
         // 2) Just remove hazard pointer
+        //
+        // 3) Pointer to slot is null, therefore we can drop right away
 
         unsafe {
-            let slot = &(*self.slot);
+            if self.slot as usize == 0 {
+                drop(T::from_raw(self.inner))
+            } else {
+                let slot = &(*self.slot);
 
-            if slot.swap(0, Ordering::SeqCst) != self.inner {
-                // Here we know that drop responsibility has been transfered to us
-                
-                if !registry().try_transfer_drop_responsibility(self.inner) {
-                    drop( T::from_raw(self.inner) )
+                if slot.swap(0, Ordering::SeqCst) != self.inner {
+                    // Here we know that drop responsibility has been transfered to us
+                    if !registry().try_transfer_drop_responsibility(self.inner) {
+                        drop(T::from_raw(self.inner))
+                    }
                 }
             }
         }

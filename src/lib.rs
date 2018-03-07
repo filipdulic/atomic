@@ -1,6 +1,6 @@
-mod atomic;
-mod atomic_cell;
-mod atomic_ref_cell;
-mod hazard_cell;
-mod epoch_cell;
-mod pointer;
+pub mod atomic;
+pub mod atomic_cell;
+pub mod atomic_ref_cell;
+pub mod hazard_cell;
+pub mod epoch_cell;
+pub mod pointer;
