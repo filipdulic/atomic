@@ -28,7 +28,7 @@ impl<T> Stack<T> {
 
         loop {
             let head = self.head.get();
-            Arc::get_mut(&mut new).unwrap().next.set((*head).clone());
+            new.next.set(head.clone());
 
             match self.head.compare_and_set(&head, Some(new)) {
                 Ok(()) => break,
