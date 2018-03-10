@@ -31,7 +31,6 @@ impl<T: Pointer> HazardCell<T> {
         loop {
             let inner = self.inner.load(Ordering::SeqCst);
 
-            // TODO (optimization?): can we move this into an if statement? 
             unsafe {
                 let slot = &*slot;
                 slot.store(inner, Ordering::SeqCst);
@@ -106,7 +105,7 @@ impl<T: Pointer> Deref for HazardGuard<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        unsafe { &*(self.inner as *const T) }
+        unsafe { &*(&self.inner as *const _ as *const T) }
     }
 }
 
@@ -147,8 +146,6 @@ struct ThreadEntry {
 
 #[derive(Default)]
 struct Registry {
-    // TODO(ibmandura): Let's use CachePadded here.
-    // TODO(ibmandura): Let's find a good number instead of `out of thin air` 32.
     entries: [ThreadEntry; 32],
     next: AtomicPtr<Registry>,
 }

@@ -1,3 +1,6 @@
+
+extern crate crossbeam;
+
 pub mod atomic;
 pub mod atomic_cell;
 pub mod atomic_ref_cell;
