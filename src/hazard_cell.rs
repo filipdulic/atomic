@@ -53,6 +53,18 @@ impl<T: Pointer> HazardCell<T> {
         self.replace(new_val);
     }
 
+    pub fn compare_and_set(&self, current: &HazardGuard<T>, new: T) -> Result<(), T> {
+        let new_raw = new.into_raw();
+        let old_raw = current.inner;
+
+        if self.inner.compare_and_swap(old_raw, new_raw, Ordering::SeqCst) == old_raw {
+            drop(HazardGuard::<T>::new(old_raw, ptr::null()));
+            Ok(())
+        } else {
+            Err( unsafe{ T::from_raw(new_raw)  } )
+        }
+    }
+
     fn allocate_hazard_slot() -> HazardSlot {
         HARNESS.with(|harness| harness.allocate_hazard_slot())
     }
