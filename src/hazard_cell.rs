@@ -57,6 +57,12 @@ impl<T: Pointer> HazardCell<T> {
         }
     }
 
+    pub fn set(&self, new_val: T) {
+        let new_raw = new_val.into_raw();
+        let old_raw = self.inner.swap(new_raw, Ordering::SeqCst);
+        unsafe { drop(T::from_raw(old_raw)) };
+    }
+
     fn allocate_hazard_slot() -> HazardSlot {
         HARNESS.with(|harness| harness.allocate_hazard_slot())
     }
@@ -98,11 +104,14 @@ impl<T: Pointer> Drop for HazardGuard<T> {
         //    - Transfer the responsibility to somebody else
         //    - Delete it
         // 2) Just remove hazard pointer
-        // 3) Pointer to slot is null, therefore we can drop right away
+        //
+        // 3) Pointer to slot is null, therefore we can try to drop right away
 
         unsafe {
             if self.slot.is_null() {
-                drop(T::from_raw(self.inner))
+                if !registry().try_transfer_drop_responsibility(self.inner) {
+                    drop(T::from_raw(self.inner))
+                }
             } else {
                 let slot = &(*self.slot);
 
