@@ -1,4 +1,5 @@
 extern crate atomic;
+extern crate crossbeam;
 extern crate parking_lot;
 
 use std::sync::Arc;
@@ -56,14 +57,21 @@ impl<T> Stack<T> {
 }
 
 fn main() {
-    let s = Stack::<i32>::new();
-    s.push(10);
-    s.push(20);
-    s.push(30);
-    println!("{:?}", s.pop());
-    s.push(40);
-    println!("{:?}", s.pop());
-    println!("{:?}", s.pop());
-    println!("{:?}", s.pop());
-    println!("{:?}", s.pop());
+    const N: usize = 1_000_000;
+
+    let s = Stack::new();
+    // let s = crossbeam::sync::TreiberStack::new();
+
+    crossbeam::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                for i in 0..N {
+                    s.push(i);
+                }
+                for _ in 0..N {
+                    s.pop().unwrap();
+                }
+            });
+        }
+    });
 }
