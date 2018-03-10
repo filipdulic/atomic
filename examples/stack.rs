@@ -43,12 +43,10 @@ impl<T> Stack<T> {
         loop {
             let head = self.head.get();
 
-            match head.as_ref() {
+            match *head {
                 None => return None,
-                Some(h) => {
-                    let next = h.next.get().clone();
-
-                    if self.head.compare_and_set(&head, next).is_ok() {
+                Some(ref h) => {
+                    if self.head.compare_and_set(&head, h.next.get().clone()).is_ok() {
                         return h.value.lock().take();
                     }
                 }
