@@ -31,17 +31,14 @@ impl<T: Pointer> HazardCell<T> {
         loop {
             let inner = self.inner.load(Ordering::SeqCst);
 
+            // TODO (optimization?): can we move this into an if statement? 
             unsafe {
                 let slot = &*slot;
                 slot.store(inner, Ordering::SeqCst);
             }
 
             if self.inner.load(Ordering::SeqCst) == inner {
-                return HazardGuard {
-                    inner: inner,
-                    slot: slot,
-                    _marker: PhantomData,
-                }
+                return HazardGuard::new(inner, slot)
             }
         }
     }
@@ -49,18 +46,11 @@ impl<T: Pointer> HazardCell<T> {
     pub fn replace(&self, new_val: T) -> HazardGuard<T> {
         let new_raw = new_val.into_raw();
         let old_raw = self.inner.swap(new_raw, Ordering::SeqCst);
-
-        HazardGuard {
-            inner: old_raw,
-            slot: ptr::null(),
-            _marker: PhantomData,
-        }
+        HazardGuard::new(old_raw, ptr::null())
     }
 
     pub fn set(&self, new_val: T) {
-        let new_raw = new_val.into_raw();
-        let old_raw = self.inner.swap(new_raw, Ordering::SeqCst);
-        unsafe { drop(T::from_raw(old_raw)) };
+        self.replace(new_val);
     }
 
     fn allocate_hazard_slot() -> HazardSlot {
@@ -88,6 +78,16 @@ pub struct HazardGuard<T: Pointer> {
     inner: usize,
     slot: HazardSlot,
     _marker: PhantomData<T>,
+}
+
+impl<T: Pointer> HazardGuard<T> {
+    fn new(inner: usize, slot: HazardSlot) -> Self {
+        HazardGuard {
+            inner: inner,
+            slot: slot,
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<T: Pointer> Deref for HazardGuard<T> {
