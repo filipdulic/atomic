@@ -1,8 +1,10 @@
 extern crate atomic;
+extern crate parking_lot;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use atomic::hazard_cell::HazardCell;
+use parking_lot::Mutex;
 
 struct Node<T> {
     value: Mutex<Option<T>>,
@@ -47,7 +49,7 @@ impl<T> Stack<T> {
                     let next = h.next.get().clone();
 
                     if self.head.compare_and_set(&head, next).is_ok() {
-                        return h.value.lock().unwrap().take();
+                        return h.value.lock().take();
                     }
                 }
             }

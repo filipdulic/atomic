@@ -5,3 +5,6 @@ authors = ["Stjepan Glavina <stjepang@gmail.com>"]
 
 [dependencies]
 crossbeam = "*"
+
+[dev-dependencies]
+parking_lot = "*"
