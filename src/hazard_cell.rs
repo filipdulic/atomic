@@ -27,18 +27,36 @@ impl<T: Pointer> HazardCell<T> {
         // We have to set a hazard pointer to to ThreadEntry first and only then return.
 
         let slot = Self::allocate_hazard_slot();
+        let slot = unsafe { &*slot };
+        let mut inner = self.inner.load(Ordering::Relaxed);
 
         loop {
-            let inner = self.inner.load(Ordering::SeqCst);
-
-            unsafe {
-                let slot = &*slot;
-                slot.store(inner, Ordering::SeqCst);
+            if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
+                // HACK(stjepang): On x86 architectures there are two different ways of executing
+                // a `SeqCst` fence.
+                //
+                // 1. `atomic::fence(SeqCst)`, which compiles into a `mfence` instruction.
+                // 2. `_.compare_and_swap(_, _, SeqCst)`, which compiles into a `lock cmpxchg`
+                //    instruction.
+                //
+                // Both instructions have the effect of a full barrier, but benchmarks have shown
+                // that the second one makes the algorithm faster in this particular case.
+                let previous = slot.compare_and_swap(0, inner, Ordering::SeqCst);
+                debug_assert_eq!(previous, 0);
+            } else {
+                slot.store(inner, Ordering::Relaxed);
+                ::std::sync::atomic::fence(Ordering::SeqCst);
             }
 
-            if self.inner.load(Ordering::SeqCst) == inner {
-                return HazardGuard::new(inner, slot)
+            let guard = HazardGuard::new(inner, slot);
+
+            let new = self.inner.load(Ordering::Relaxed);
+            if new == inner {
+                return guard;
             }
+
+            inner = new;
+            // `guard` gets dropped, potentially destroying the object.
         }
     }
 
@@ -64,6 +82,7 @@ impl<T: Pointer> HazardCell<T> {
         }
     }
 
+    #[inline]
     fn allocate_hazard_slot() -> HazardSlot {
         HARNESS.with(|harness| harness.allocate_hazard_slot())
     }
@@ -110,6 +129,7 @@ impl<T: Pointer> Deref for HazardGuard<T> {
 }
 
 impl<T: Pointer> Drop for HazardGuard<T> {
+    #[inline]
     fn drop(&mut self) {
         // 1) Drop responsibility might have been transfered to us and we have either:
         //    - Transfer the responsibility to somebody else
@@ -193,7 +213,10 @@ impl Registry {
         unsafe { (*next).register() }
     }
 
+    #[cold]
     fn try_transfer_drop_responsibility(&self, ptr: usize) -> bool {
+        ::std::sync::atomic::fence(Ordering::SeqCst);
+
         for entry in self.entries.iter() {
             if entry.in_use.load(Ordering::SeqCst) {
                 if entry.try_transfer_drop_responsibility(ptr) {
@@ -220,9 +243,10 @@ impl ThreadEntry {
         self.in_use.store(false, Ordering::SeqCst)
     }
 
+    #[inline]
     fn allocate_hazard_slot(&self) -> HazardSlot {
         for hazard in self.hazards.iter() {
-            if hazard.load(Ordering::SeqCst) == 0 {
+            if hazard.load(Ordering::Relaxed) == 0 {
                 return hazard as *const _;
             }
         }
@@ -241,8 +265,9 @@ impl ThreadEntry {
     fn try_transfer_drop_responsibility(&self, ptr: usize) -> bool {
         for hazard in self.hazards.iter() {
             if hazard.load(Ordering::SeqCst) == ptr {
-                hazard.store(0, Ordering::SeqCst);
-                return true;
+                if hazard.compare_and_swap(ptr, 0, Ordering::SeqCst) == ptr {
+                    return true;
+                }
             }
         }
         return false;
@@ -264,6 +289,7 @@ impl Harness {
         }
     }
 
+    #[inline]
     fn allocate_hazard_slot(&self) -> HazardSlot {
         unsafe { (*self.entry).allocate_hazard_slot() }
     }
