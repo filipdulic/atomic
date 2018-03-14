@@ -12,6 +12,12 @@ struct Node<T> {
     next: HazardCell<Option<Arc<Node<T>>>>,
 }
 
+impl<T> Drop for Node<T> {
+    fn drop(&mut self) {
+        // TODO: Drop the chain of nodes iteratively rather than recursively.
+    }
+}
+
 struct Stack<T> {
     head: HazardCell<Option<Arc<Node<T>>>>,
 }
@@ -58,17 +64,18 @@ impl<T> Stack<T> {
 
 fn main() {
     const N: usize = 1_000_000;
+    const T: usize = 8;
 
     let s = Stack::new();
     // let s = crossbeam::sync::TreiberStack::new();
 
     crossbeam::scope(|scope| {
-        for _ in 0..4 {
+        for _ in 0..T {
             scope.spawn(|| {
-                for i in 0..N {
+                for i in 0 .. N / T {
                     s.push(i);
                 }
-                for _ in 0..N {
+                for _ in 0 .. N / T {
                     s.pop().unwrap();
                 }
             });
