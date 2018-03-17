@@ -3,6 +3,11 @@ name = "atomic"
 version = "0.1.0"
 authors = ["Stjepan Glavina <stjepang@gmail.com>"]
 
+[features]
+default = ["use_std"]
+use_std = []
+nightly = []
+
 [dependencies]
 crossbeam = "*"
 
