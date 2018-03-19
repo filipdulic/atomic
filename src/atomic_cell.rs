@@ -11,7 +11,7 @@ pub struct AtomicCell<T> {
 }
 
 impl<T> AtomicCell<T> {
-    /// Creates a new `AtomicCell` initialized with `val`.
+    /// Creates a new atomic cell initialized with `val`.
     ///
     /// # Examples
     ///
@@ -56,7 +56,7 @@ impl<T> AtomicCell<T> {
         unsafe { &mut *self.value.get() }
     }
 
-    /// Unwraps the `AtomicCell` and returns the inner value.
+    /// Unwraps the atomic cell and returns its inner value.
     ///
     /// # Examples
     ///
@@ -104,7 +104,7 @@ impl<T> AtomicCell<T> {
         atomic_is_lock_free::<T>()
     }
 
-    /// Stores a value.
+    /// Stores `val` into the atomic cell.
     ///
     /// # Examples
     ///
@@ -127,7 +127,7 @@ impl<T> AtomicCell<T> {
         }
     }
 
-    /// Replaces the inner value and returns it.
+    /// Stores `val` into the atomic cell and returns the previous value.
     ///
     /// # Examples
     ///
@@ -146,7 +146,13 @@ impl<T> AtomicCell<T> {
 }
 
 impl<T: Default> AtomicCell<T> {
-    /// Takes the value and replaces it with `T::default()`.
+    /// Takes the inner value and replaces it with `T::default()`.
+    ///
+    /// Note that `atomic_cell.take()` is equivalent to:
+    ///
+    /// ```ignore
+    /// atomic_cell.replace(T::default())
+    /// ```
     ///
     /// # Examples
     ///
@@ -180,6 +186,37 @@ impl<T: Copy> AtomicCell<T> {
         unsafe { atomic_load(self.value.get()) }
     }
 
+    /// Updates the inner value using a function and returns the new value.
+    ///
+    /// Function `f` might have to be called multiple times if the inner value is concurrently
+    /// changed by other threads.
+    ///
+    /// Note that `atomic_cell.update(f)` is equivalent to:
+    ///
+    /// ```ignore
+    /// loop {
+    ///     let current = atomic_cell.get();
+    ///     let new = f(current);
+    ///
+    ///     if atomic_cell.compare_and_set(current, new) {
+    ///         break new;
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use atomic::AtomicCell;
+    ///
+    /// let a = AtomicCell::new(7);
+    ///
+    /// assert_eq!(a.update(|x| x.min(9)), 7);
+    /// assert_eq!(a.update(|x| x.min(5)), 5);
+    ///
+    /// a.update(|x| x * 10);
+    /// assert_eq!(a.get(), 50);
+    /// ```
     pub fn update<F>(&self, mut f: F) -> T
     where
         F: FnMut(T) -> T,
@@ -203,6 +240,23 @@ impl<T: Copy> AtomicCell<T> {
 }
 
 impl<T: Copy + Eq> AtomicCell<T> {
+    /// If the current value equals `current`, stores `new` into the atomic cell.
+    ///
+    /// Returns `true` if the value was updated, and `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use atomic::AtomicCell;
+    ///
+    /// let a = AtomicCell::new(7);
+    ///
+    /// assert_eq!(a.compare_and_set(1, 8), false);
+    /// assert_eq!(a.get(), 7);
+    ///
+    /// assert_eq!(a.compare_and_set(7, 8), true);
+    /// assert_eq!(a.get(), 8);
+    /// ```
     pub fn compare_and_set(&self, mut current: T, new: T) -> bool {
         loop {
             let previous = unsafe {
@@ -217,6 +271,13 @@ impl<T: Copy + Eq> AtomicCell<T> {
                 return false;
             }
 
+            // Since `byte_eq(&previous, &current)` is `false`, that means the compare-and-swap
+            // operation failed and didn't store `new`. However, `previous == current`, which means
+            // it technically should've succeeded.
+            //
+            // We cannot return neither `true` nor `false` here because the operation didn't
+            // succeed nor fail, but simply encountered an inconsistent state. The only option left
+            // is to retry with `previous` as the new `current`.
             current = previous;
         }
     }
@@ -496,7 +557,7 @@ where
         },
         {
             let _lock = lock(dst as usize);
-            if byte_eq(&current, &new) {
+            if byte_eq(&*dst, &current) {
                 ptr::replace(dst, new)
             } else {
                 ptr::read(dst)
