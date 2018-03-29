@@ -3,7 +3,7 @@ use std::fmt;
 use std::mem;
 use std::ptr;
 use std::slice;
-use std::sync::atomic::{self, AtomicBool, Ordering, ATOMIC_BOOL_INIT};
+use std::sync::atomic::{self, AtomicBool, Ordering};
 
 /// A thread-safe mutable memory location.
 ///
@@ -495,7 +495,7 @@ fn lock(addr: usize) -> LockGuard {
     // The number of locks is prime.
     const LEN: usize = 499;
 
-    const A: AtomicBool = ATOMIC_BOOL_INIT;
+    const A: AtomicBool = AtomicBool::new(false);
     static LOCKS: [AtomicBool; LEN] = [
         A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A,
         A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A,
@@ -629,7 +629,9 @@ unsafe fn atomic_store<T>(dst: *mut T, val: T) {
         T, a,
         {
             a = &*(dst as *const _ as *const _);
-            a.store(mem::transmute_copy(&val), Ordering::SeqCst)
+            let res = a.store(mem::transmute_copy(&val), Ordering::SeqCst);
+            mem::forget(val);
+            res
         },
         {
             let _lock = lock(dst as usize);
@@ -647,7 +649,9 @@ unsafe fn atomic_swap<T>(dst: *mut T, val: T) -> T {
         T, a,
         {
             a = &*(dst as *const _ as *const _);
-            mem::transmute_copy(&a.swap(mem::transmute_copy(&val), Ordering::SeqCst))
+            let res = mem::transmute_copy(&a.swap(mem::transmute_copy(&val), Ordering::SeqCst));
+            mem::forget(val);
+            res
         },
         {
             let _lock = lock(dst as usize);
