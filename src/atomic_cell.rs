@@ -4,9 +4,21 @@ use std::mem;
 use std::ptr;
 use std::slice;
 use std::sync::atomic::{self, AtomicBool, Ordering, ATOMIC_BOOL_INIT};
-use std::thread;
 
+/// A thread-safe mutable memory location.
+///
+/// This type is equivalent to [`Cell`], except it can also be shared among multiple threads (it
+/// implements [`Sync`]). Operations on `AtomicCell`s use atomic instructions whenever possible,
+/// and synchronize using global locks otherwise.
+///
+/// [`Cell`]: https://doc.rust-lang.org/std/cell/struct.Cell.html
+/// [`Sync`]: https://doc.rust-lang.org/std/marker/trait.Sync.html
 pub struct AtomicCell<T> {
+    /// The inner value.
+    ///
+    /// If this value can be transmuted into a primitive atomic type, it will be treated as such.
+    /// Otherwise, all potentially concurrent operations on this data will be protected by a global
+    /// lock.
     value: UnsafeCell<T>,
 }
 
@@ -86,11 +98,11 @@ impl<T> AtomicCell<T> {
     /// // operations provided by it.
     /// assert_eq!(AtomicCell::<usize>::is_lock_free(), true);
     ///
-    /// // A wrapper struct around `bool`.
+    /// // A wrapper struct around `isize`.
     /// struct Foo {
-    ///     bar: bool,
+    ///     bar: isize,
     /// }
-    /// // `AtomicCell<Foo>` will be internally represented as `AtomicBool`.
+    /// // `AtomicCell<Foo>` will be internally represented as `AtomicIsize`.
     /// assert_eq!(AtomicCell::<Foo>::is_lock_free(), true);
     ///
     /// // Operations on zero-sized types are always lock-free.
@@ -284,26 +296,29 @@ impl<T: Copy + Eq> AtomicCell<T> {
 }
 
 macro_rules! impl_arithmetic {
-    ($t:ty, $atomic:ty) => {
+    ($t:ty, $example:tt) => {
         impl AtomicCell<$t> {
+            /// Increments the inner value by `val` and returns the new value.
+            ///
+            /// The addition wraps on overflow. Note that `atomic_cell.add(val)` is equivalent to:
+            ///
+            /// ```ignore
+            /// atomic_cell.update(|x| x.wrapping_add(val))
+            /// ```
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use atomic::AtomicCell;
+            ///
+            #[doc = $example]
+            ///
+            /// assert_eq!(a.add(3), 10);
+            /// assert_eq!(a.get(), 10);
+            /// ```
             #[inline]
             pub fn add(&self, val: $t) -> $t {
-                let a = unsafe { &*(self.value.get() as *const $atomic) };
-                a.fetch_add(val, Ordering::SeqCst).wrapping_add(val)
-            }
-
-            #[inline]
-            pub fn sub(&self, val: $t) -> $t {
-                let a = unsafe { &*(self.value.get() as *const $atomic) };
-                a.fetch_sub(val, Ordering::SeqCst).wrapping_sub(val)
-            }
-        }
-    };
-    ($t:ty) => {
-        impl AtomicCell<$t> {
-            #[inline]
-            pub fn add(&self, val: $t) -> $t {
-                if mem::size_of::<$t>() == mem::size_of::<usize>() {
+                if can_transmute::<$t, atomic::AtomicUsize>() {
                     let a = unsafe { &*(self.value.get() as *const atomic::AtomicUsize) };
                     a.fetch_add(val as usize, Ordering::SeqCst).wrapping_add(val as usize) as $t
                 } else {
@@ -314,9 +329,28 @@ macro_rules! impl_arithmetic {
                 }
             }
 
+            /// Decrements the inner value by `val` and returns the new value.
+            ///
+            /// The subtraction wraps on overflow. Note that `atomic_cell.sub(val)` is equivalent
+            /// to:
+            ///
+            /// ```ignore
+            /// atomic_cell.update(|x| x.wrapping_sub(val))
+            /// ```
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use atomic::AtomicCell;
+            ///
+            #[doc = $example]
+            ///
+            /// assert_eq!(a.sub(3), 4);
+            /// assert_eq!(a.get(), 4);
+            /// ```
             #[inline]
             pub fn sub(&self, val: $t) -> $t {
-                if mem::size_of::<$t>() == mem::size_of::<usize>() {
+                if can_transmute::<$t, atomic::AtomicUsize>() {
                     let a = unsafe { &*(self.value.get() as *const atomic::AtomicUsize) };
                     a.fetch_sub(val as usize, Ordering::SeqCst).wrapping_sub(val as usize) as $t
                 } else {
@@ -328,44 +362,84 @@ macro_rules! impl_arithmetic {
             }
         }
     };
+    ($t:ty, $atomic:ty, $example:tt) => {
+        impl AtomicCell<$t> {
+            /// Increments the inner value by `val` and returns the new value.
+            ///
+            /// The addition wraps on overflow. Note that `atomic_cell.add(val)` is equivalent to:
+            ///
+            /// ```ignore
+            /// atomic_cell.update(|x| x.wrapping_add(val))
+            /// ```
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use atomic::AtomicCell;
+            ///
+            #[doc = $example]
+            ///
+            /// assert_eq!(a.add(3), 10);
+            /// assert_eq!(a.get(), 10);
+            /// ```
+            #[inline]
+            pub fn add(&self, val: $t) -> $t {
+                let a = unsafe { &*(self.value.get() as *const $atomic) };
+                a.fetch_add(val, Ordering::SeqCst).wrapping_add(val)
+            }
+
+            /// Decrements the inner value by `val` and returns the new value.
+            ///
+            /// The subtraction wraps on overflow. Note that `atomic_cell.sub(val)` is equivalent
+            /// to:
+            ///
+            /// ```ignore
+            /// atomic_cell.update(|x| x.wrapping_sub(val))
+            /// ```
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use atomic::AtomicCell;
+            ///
+            #[doc = $example]
+            ///
+            /// assert_eq!(a.sub(3), 4);
+            /// assert_eq!(a.get(), 4);
+            /// ```
+            #[inline]
+            pub fn sub(&self, val: $t) -> $t {
+                let a = unsafe { &*(self.value.get() as *const $atomic) };
+                a.fetch_sub(val, Ordering::SeqCst).wrapping_sub(val)
+            }
+        }
+    };
 }
 
-#[cfg(not(feature = "nightly"))]
-impl_arithmetic!(u8);
-#[cfg(not(feature = "nightly"))]
-impl_arithmetic!(i8);
-#[cfg(not(feature = "nightly"))]
-impl_arithmetic!(u16);
-#[cfg(not(feature = "nightly"))]
-impl_arithmetic!(i16);
-#[cfg(not(feature = "nightly"))]
-impl_arithmetic!(u32);
-#[cfg(not(feature = "nightly"))]
-impl_arithmetic!(i32);
-#[cfg(not(feature = "nightly"))]
-impl_arithmetic!(u64);
-#[cfg(not(feature = "nightly"))]
-impl_arithmetic!(i64);
+cfg_if! {
+    if #[cfg(feature = "nightly")] {
+        impl_arithmetic!(u8, atomic::AtomicU8, "let a = AtomicCell::new(7u8);");
+        impl_arithmetic!(i8, atomic::AtomicI8, "let a = AtomicCell::new(7i8);");
+        impl_arithmetic!(u16, atomic::AtomicU16, "let a = AtomicCell::new(7u16);");
+        impl_arithmetic!(i16, atomic::AtomicI16, "let a = AtomicCell::new(7i16);");
+        impl_arithmetic!(u32, atomic::AtomicU32, "let a = AtomicCell::new(7u32);");
+        impl_arithmetic!(i32, atomic::AtomicI32, "let a = AtomicCell::new(7i32);");
+        impl_arithmetic!(u64, atomic::AtomicU64, "let a = AtomicCell::new(7u64);");
+        impl_arithmetic!(i64, atomic::AtomicI64, "let a = AtomicCell::new(7i64);");
+    } else {
+        impl_arithmetic!(u8, "let a = AtomicCell::new(7u8);");
+        impl_arithmetic!(i8, "let a = AtomicCell::new(7i8);");
+        impl_arithmetic!(u16, "let a = AtomicCell::new(7u16);");
+        impl_arithmetic!(i16, "let a = AtomicCell::new(7i16);");
+        impl_arithmetic!(u32, "let a = AtomicCell::new(7u32);");
+        impl_arithmetic!(i32, "let a = AtomicCell::new(7i32);");
+        impl_arithmetic!(u64, "let a = AtomicCell::new(7u64);");
+        impl_arithmetic!(i64, "let a = AtomicCell::new(7i64);");
+    }
+}
 
-#[cfg(feature = "nightly")]
-impl_arithmetic!(u8, atomic::AtomicU8);
-#[cfg(feature = "nightly")]
-impl_arithmetic!(i8, atomic::AtomicI8);
-#[cfg(feature = "nightly")]
-impl_arithmetic!(u16, atomic::AtomicU16);
-#[cfg(feature = "nightly")]
-impl_arithmetic!(i16, atomic::AtomicI16);
-#[cfg(feature = "nightly")]
-impl_arithmetic!(u32, atomic::AtomicU32);
-#[cfg(feature = "nightly")]
-impl_arithmetic!(i32, atomic::AtomicI32);
-#[cfg(feature = "nightly")]
-impl_arithmetic!(u64, atomic::AtomicU64);
-#[cfg(feature = "nightly")]
-impl_arithmetic!(i64, atomic::AtomicI64);
-
-impl_arithmetic!(usize, atomic::AtomicUsize);
-impl_arithmetic!(isize, atomic::AtomicIsize);
+impl_arithmetic!(usize, atomic::AtomicUsize, "let a = AtomicCell::new(7usize);");
+impl_arithmetic!(isize, atomic::AtomicIsize, "let a = AtomicCell::new(7isize);");
 
 impl<T: Default> Default for AtomicCell<T> {
     fn default() -> AtomicCell<T> {
@@ -381,6 +455,7 @@ impl<T: Copy + fmt::Debug> fmt::Debug for AtomicCell<T> {
     }
 }
 
+/// Returns `true` if the two values are equal byte-for-byte.
 fn byte_eq<T>(a: &T, b: &T) -> bool {
     unsafe {
         let a = slice::from_raw_parts(a as *const _ as *const u8, mem::size_of::<T>());
@@ -389,6 +464,13 @@ fn byte_eq<T>(a: &T, b: &T) -> bool {
     }
 }
 
+/// Returns `true` if values of type `A` can be transmuted into values of type `B`.
+fn can_transmute<A, B>() -> bool {
+    // Sizes must be equal, but alignment of `A` must be greater or equal than that of `B`.
+    mem::size_of::<A>() == mem::size_of::<B>() && mem::align_of::<A>() >= mem::align_of::<B>()
+}
+
+/// Automatically releases a lock when dropped.
 struct LockGuard {
     lock: &'static AtomicBool,
 }
@@ -400,9 +482,19 @@ impl Drop for LockGuard {
     }
 }
 
+/// Acquires the lock for atomic data stored at the given address.
+///
+/// This function is used to protect atomic data which doesn't fit into any of the primitive atomic
+/// types in `std::sync::atomic`. Operations on such atomics must therefore use a global lock.
+///
+/// However, there is not only one global lock but an array of many locks, and one of them is
+/// picked based on the given address. Having many locks reduces contention and improves
+/// scalability.
 #[inline]
 fn lock(addr: usize) -> LockGuard {
+    // The number of locks is prime.
     const LEN: usize = 499;
+
     const A: AtomicBool = ATOMIC_BOOL_INIT;
     static LOCKS: [AtomicBool; LEN] = [
         A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A,
@@ -424,16 +516,23 @@ fn lock(addr: usize) -> LockGuard {
         A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A, A,
     ];
 
+    // If the modulus is a constant number, the compiler will use crazy math to transform this into
+    // a sequence of cheap arithmetic operations rather than using the slow modulo instruction.
     let lock = &LOCKS[addr % LEN];
+
     let mut step = 0usize;
 
     while lock.compare_and_swap(false, true, Ordering::Acquire) {
         if step < 5 {
-            // do nothing
+            // Just try again.
         } else if step < 10 {
             atomic::spin_loop_hint();
         } else {
-            thread::yield_now();
+            #[cfg(not(feature = "use_std"))]
+            atomic::spin_loop_hint();
+
+            #[cfg(feature = "use_std")]
+            ::std::thread::yield_now();
         }
         step = step.wrapping_add(1);
     }
@@ -441,6 +540,9 @@ fn lock(addr: usize) -> LockGuard {
     LockGuard { lock }
 }
 
+/// An atomic `()`.
+///
+/// All operations are noops.
 struct AtomicUnit;
 
 impl AtomicUnit {
@@ -458,19 +560,21 @@ impl AtomicUnit {
 }
 
 macro_rules! atomic {
+    // If values of type `$t` can be transmuted into values of the primitive atomic type `$atomic`,
+    // declares variable `$a` of type `$atomic` and executes `$atomic_op`, breaking out of the loop.
     (@check, $t:ty, $atomic:ty, $a:ident, $atomic_op:expr) => {
-        let ok_size = mem::size_of::<$t>() == mem::size_of::<$atomic>();
-        let ok_align = mem::align_of::<$t>() >= mem::align_of::<$atomic>();
-
-        if ok_size && ok_align {
+        if can_transmute::<$t, $atomic>() {
             let $a: &$atomic;
             break $atomic_op
         }
     };
+
+    // If values of type `$t` can be transmuted into values of a primitive atomic type, declares
+    // variable `$a` of that type and executes `$atomic_op`. Otherwise, just executes
+    // `$fallback_op`.
     ($t:ty, $a:ident, $atomic_op:expr, $fallback_op:expr) => {
         loop {
             atomic!(@check, $t, AtomicUnit, $a, $atomic_op);
-            atomic!(@check, $t, atomic::AtomicBool, $a, $atomic_op);
             atomic!(@check, $t, atomic::AtomicUsize, $a, $atomic_op);
 
             #[cfg(feature = "nightly")]
@@ -490,27 +594,36 @@ macro_rules! atomic {
     };
 }
 
+/// Returns `true` if operations on `AtomicCell<T>` are lock-free.
 fn atomic_is_lock_free<T>() -> bool {
     atomic! { T, _a, true, false }
 }
 
-unsafe fn atomic_load<T>(dst: *mut T) -> T
+/// Atomically reads data from `src`.
+///
+/// This operation is sequentially consistent. If possible, an atomic instructions is used, and a
+/// global lock otherwise.
+unsafe fn atomic_load<T>(src: *mut T) -> T
 where
     T: Copy,
 {
     atomic! {
         T, a,
         {
-            a = &*(dst as *const _ as *const _);
+            a = &*(src as *const _ as *const _);
             mem::transmute_copy(&a.load(Ordering::SeqCst))
         },
         {
-            let _lock = lock(dst as usize);
-            ptr::read(dst)
+            let _lock = lock(src as usize);
+            ptr::read(src)
         }
     }
 }
 
+/// Atomically writes `val` to `dst`.
+///
+/// This operation is sequentially consistent. If possible, an atomic instructions is used, and a
+/// global lock otherwise.
 unsafe fn atomic_store<T>(dst: *mut T, val: T) {
     atomic! {
         T, a,
@@ -525,6 +638,10 @@ unsafe fn atomic_store<T>(dst: *mut T, val: T) {
     }
 }
 
+/// Atomically swaps data at `dst` with `val`.
+///
+/// This operation is sequentially consistent. If possible, an atomic instructions is used, and a
+/// global lock otherwise.
 unsafe fn atomic_swap<T>(dst: *mut T, val: T) -> T {
     atomic! {
         T, a,
@@ -539,6 +656,11 @@ unsafe fn atomic_swap<T>(dst: *mut T, val: T) -> T {
     }
 }
 
+/// Atomically compares data at `dst` to `current` and, if equal byte-for-byte, swaps data at `dst`
+/// with `new`.
+///
+/// This operation is sequentially consistent. If possible, an atomic instructions is used, and a
+/// global lock otherwise.
 unsafe fn atomic_compare_and_swap<T>(dst: *mut T, current: T, new: T) -> T
 where
     T: Copy,

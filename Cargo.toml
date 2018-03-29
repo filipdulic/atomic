@@ -9,6 +9,7 @@ use_std = []
 nightly = []
 
 [dependencies]
+cfg-if = "0.1"
 crossbeam = "*"
 
 [dev-dependencies]
