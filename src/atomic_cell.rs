@@ -7,12 +7,14 @@ use std::sync::atomic::{self, AtomicBool, Ordering};
 
 /// A thread-safe mutable memory location.
 ///
-/// This type is equivalent to [`Cell`], except it can also be shared among multiple threads (it
-/// implements [`Sync`]). Operations on `AtomicCell`s use atomic instructions whenever possible,
-/// and synchronize using global locks otherwise.
+/// This type is equivalent to [`Cell`], except it can also be shared among multiple threads.
+///
+/// Operations on `AtomicCell`s use atomic instructions whenever possible, and synchronize using
+/// global locks otherwise. You can call [`AtomicCell::<T>::is_lock_free()`] to check whether
+/// atomic instructions or locks will be used.
 ///
 /// [`Cell`]: https://doc.rust-lang.org/std/cell/struct.Cell.html
-/// [`Sync`]: https://doc.rust-lang.org/std/marker/trait.Sync.html
+/// [`AtomicCell::<T>::is_lock_free()`]: struct.AtomicCell.html#method.is_lock_free
 pub struct AtomicCell<T> {
     /// The inner value.
     ///
@@ -86,8 +88,8 @@ impl<T> AtomicCell<T> {
 
     /// Returns `true` if operations on values of this type are lock-free.
     ///
-    /// If the compiler or platform don't support the necessary atomic instructions, `AtomicCell`
-    /// will use global locks on every potentially concurrent atomic operation.
+    /// If the compiler or the platform doesn't support the necessary atomic instructions,
+    /// `AtomicCell<T>` will use global locks for every potentially concurrent atomic operation.
     ///
     /// # Examples
     ///
