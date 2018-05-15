@@ -4,12 +4,12 @@ extern crate parking_lot;
 
 use std::sync::Arc;
 
-use atomic::hazard_cell::HazardCell;
+use atomic::AtomicArc;
 use parking_lot::Mutex;
 
 struct Node<T> {
     value: Mutex<Option<T>>,
-    next: HazardCell<Option<Arc<Node<T>>>>,
+    next: AtomicArc<Node<T>>,
 }
 
 impl<T> Drop for Node<T> {
@@ -19,29 +19,29 @@ impl<T> Drop for Node<T> {
 }
 
 struct Stack<T> {
-    head: HazardCell<Option<Arc<Node<T>>>>,
+    head: AtomicArc<Node<T>>,
 }
 
 impl<T> Stack<T> {
     fn new() -> Stack<T> {
         Stack {
-            head: HazardCell::new(None),
+            head: AtomicArc::new(None),
         }
     }
 
     fn push(&self, value: T) {
         let mut new = Arc::new(Node {
             value: Mutex::new(Some(value)),
-            next: HazardCell::new(None),
+            next: AtomicArc::new(None),
         });
 
         loop {
             let head = self.head.get();
-            new.next.set(head.clone());
+            new.next.set(&head);
 
-            match self.head.compare_and_set(&head, Some(new)) {
+            match self.head.compare_and_set(&head, new) {
                 Ok(()) => break,
-                Err(n) => new = n.unwrap(),
+                Err(n) => new = n.unwrap(), // TODO: eliminate this unwrap
             }
         }
     }
@@ -50,10 +50,11 @@ impl<T> Stack<T> {
         loop {
             let head = self.head.get();
 
-            match *head {
+            match head.as_ref() {
                 None => return None,
-                Some(ref h) => {
-                    if self.head.compare_and_set(&head, h.next.get().clone()).is_ok() {
+                Some(h) => {
+                    if self.head.compare_and_set(&head, h.next.get()).is_ok() {
+                        // TODO: h.wait_unwrap().value.into_inner()
                         return h.value.lock().take();
                     }
                 }
@@ -64,7 +65,8 @@ impl<T> Stack<T> {
 
 fn main() {
     const N: usize = 1_000_000;
-    const T: usize = 8;
+    const T: usize = 1;
+    // const T: usize = 8;
 
     let s = Stack::new();
     // let s = crossbeam::sync::TreiberStack::new();
@@ -75,7 +77,8 @@ fn main() {
                 for i in 0 .. N / T {
                     s.push(i);
                 }
-                for _ in 0 .. N / T {
+                for i in 0 .. N / T {
+                    println!("pop {}", i);
                     s.pop().unwrap();
                 }
             });

@@ -11,11 +11,10 @@ extern crate core as std;
 extern crate crossbeam;
 
 pub mod atomic;
+#[cfg(feature = "use_std")]
+pub mod atomic_arc;
 pub mod atomic_cell;
 pub mod atomic_ref_cell;
-#[cfg(feature = "use_std")]
-pub mod hazard_cell;
-#[cfg(feature = "use_std")]
-pub mod pointer;
 
 pub use atomic_cell::AtomicCell;
+pub use atomic_arc::AtomicArc;

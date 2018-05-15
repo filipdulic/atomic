@@ -1,29 +1,56 @@
-
-use std::sync::atomic::{AtomicUsize, AtomicPtr, AtomicBool, Ordering};
 use std::marker::PhantomData;
-use pointer::Pointer;
+use std::mem;
 use std::ops::Deref;
 use std::ptr;
+use std::sync::Arc;
+use std::sync::atomic::{self, AtomicUsize, AtomicPtr, AtomicBool, Ordering};
+use std::thread;
 
-pub struct HazardCell<T: Pointer> {
+// TODO: From<T>
+// TODO: From<Arc<T>>
+// TODO: From<Option<Arc<T>>>
+// TODO: fn take(&self)
+
+// TODO: use store/load/swap terminology?
+
+// TODO: when transferring responsibility, CAS to 0x1, not 0x0 because we don't want another
+// SharedArc to reuse the slot
+
+pub struct AtomicArc<T> {
     // `T` is just a pointer, so it is representable as a `usize`.
     inner: AtomicUsize,
-    _marker: PhantomData<T>,
+    _marker: PhantomData<Option<Arc<T>>>,
 }
 
-impl<T: Pointer> HazardCell<T> {
-    pub fn new(val: T) -> Self {
-        HazardCell {
-            inner: AtomicUsize::new(val.into_raw()),
+impl<T> AtomicArc<T> {
+    pub fn new<U>(val: U) -> AtomicArc<T>
+    where
+        U: Into<Option<Arc<T>>>,
+    {
+        let raw = match val.into() {
+            None => ptr::null_mut(),
+            Some(val) => Arc::into_raw(val),
+        };
+        AtomicArc {
+            inner: AtomicUsize::new(raw as usize),
             _marker: PhantomData,
         }
     }
 
-    pub fn into_inner(self) -> T {
-        unsafe { T::from_raw(self.inner.load(Ordering::SeqCst)) }
+    pub fn into_inner(self) -> Option<Arc<T>> {
+        let raw = self.inner.load(Ordering::Relaxed);
+        mem::forget(self);
+
+        if raw == 0 {
+            None
+        } else {
+            unsafe {
+                Some(Arc::from_raw(raw as *const T))
+            }
+        }
     }
 
-    pub fn get(&self) -> HazardGuard<T> {
+    pub fn get(&self) -> SharedArc<T> {
         // We have to set a hazard pointer to to ThreadEntry first and only then return.
 
         let slot = Self::allocate_hazard_slot();
@@ -45,10 +72,10 @@ impl<T: Pointer> HazardCell<T> {
                 debug_assert_eq!(previous, 0);
             } else {
                 slot.store(inner, Ordering::Relaxed);
-                ::std::sync::atomic::fence(Ordering::SeqCst);
+                atomic::fence(Ordering::SeqCst);
             }
 
-            let guard = HazardGuard::new(inner, slot);
+            let guard = SharedArc::new(inner, slot);
 
             let new = self.inner.load(Ordering::Relaxed);
             if new == inner {
@@ -60,25 +87,47 @@ impl<T: Pointer> HazardCell<T> {
         }
     }
 
-    pub fn replace(&self, new_val: T) -> HazardGuard<T> {
-        let new_raw = new_val.into_raw();
-        let old_raw = self.inner.swap(new_raw, Ordering::SeqCst);
-        HazardGuard::new(old_raw, ptr::null())
+    pub fn replace<U>(&self, val: U) -> SharedArc<T>
+    where
+        U: Into<Option<Arc<T>>>,
+    {
+        let new = match val.into() {
+            None => 0,
+            Some(val) => Arc::into_raw(val) as usize,
+        };
+        let old = self.inner.swap(new, Ordering::SeqCst);
+        SharedArc::new(old, ptr::null())
     }
 
-    pub fn set(&self, new_val: T) {
-        self.replace(new_val);
+    pub fn set<U>(&self, val: U)
+    where
+        U: Into<Option<Arc<T>>>,
+    {
+        self.replace(val.into());
     }
 
-    pub fn compare_and_set(&self, current: &HazardGuard<T>, new: T) -> Result<(), T> {
-        let new_raw = new.into_raw();
-        let old_raw = current.inner;
+    // TODO: turn `current` and `new` into `impl ArcArgument<T>`
+    pub fn compare_and_set<U>(&self, current: &SharedArc<T>, new: U) -> Result<(), Option<Arc<T>>>
+    where
+        U: Into<Option<Arc<T>>>,
+    {
+        let new = match new.into() {
+            None => 0,
+            Some(val) => Arc::into_raw(val) as usize,
+        };
+        let old = current.inner;
 
-        if self.inner.compare_and_swap(old_raw, new_raw, Ordering::SeqCst) == old_raw {
-            drop(HazardGuard::<T>::new(old_raw, ptr::null()));
+        if self.inner.compare_and_swap(old, new, Ordering::SeqCst) == old {
+            drop(SharedArc::<T>::new(old, ptr::null()));
             Ok(())
         } else {
-            Err( unsafe{ T::from_raw(new_raw)  } )
+            if new == 0 {
+                Err(None)
+            } else {
+                unsafe {
+                    Err(Some(Arc::from_raw(new as *const T)))
+                }
+            }
         }
     }
 
@@ -88,47 +137,87 @@ impl<T: Pointer> HazardCell<T> {
     }
 }
 
-unsafe impl<T: Pointer> Send for HazardCell<T> {}
-unsafe impl<T: Pointer> Sync for HazardCell<T> {}
+unsafe impl<T: Send + Sync> Send for AtomicArc<T> {}
+unsafe impl<T: Send + Sync> Sync for AtomicArc<T> {}
 
-impl<T: Pointer> Drop for HazardCell<T> {
+impl<T> Drop for AtomicArc<T> {
     fn drop(&mut self) {
         // 1) Either somebody is holding a reference to this element and we want to move
         //    responsibility of calling a drop(T) to them.
         // 2) Nobody is holding a reference to this element, therefore we are in charge of dropping
         //    an element.
 
-        if !registry().try_transfer_drop_responsibility(self.inner.load(Ordering::SeqCst)) {
-            unsafe { drop(T::from_raw(self.inner.load(Ordering::SeqCst))) }
+        let raw = self.inner.load(Ordering::Relaxed);
+
+        if !registry().try_transfer_drop_responsibility(raw) {
+            if raw != 0 {
+                unsafe {
+                    drop(Arc::from_raw(raw as *const T));
+                }
+            }
         }
     }
 }
 
-pub struct HazardGuard<T: Pointer> {
+pub struct SharedArc<T> {
     inner: usize,
     slot: HazardSlot,
-    _marker: PhantomData<T>,
+    _marker: PhantomData<Option<Arc<T>>>,
 }
 
-impl<T: Pointer> HazardGuard<T> {
+impl<T> SharedArc<T> {
     fn new(inner: usize, slot: HazardSlot) -> Self {
-        HazardGuard {
+        SharedArc {
             inner: inner,
             slot: slot,
             _marker: PhantomData,
         }
     }
-}
 
-impl<T: Pointer> Deref for HazardGuard<T> {
-    type Target = T;
+    // TODO: public function from Option<Arc<T>> or whatever
 
-    fn deref(&self) -> &T {
-        unsafe { &*(&self.inner as *const _ as *const T) }
+    pub fn clone_inner(&self) -> Option<Arc<T>> {
+        let val = if self.inner == 0 {
+            None
+        } else {
+            unsafe { Some(Arc::from_raw(self.inner as *const T)) }
+        };
+        let new = val.clone();
+        mem::forget(val);
+        new
     }
+
+    pub fn as_ref(&self) -> Option<&Arc<T>> {
+        if self.inner == 0 {
+            None
+        } else {
+            unsafe {
+                Some(mem::transmute::<&usize, &Arc<T>>(&self.inner))
+            }
+        }
+    }
+
+    // pub fn wait_unwrap(this: SharedArc<T>) -> Option<T> {
+    //     if this.inner == 0 {
+    //         None
+    //     } else {
+    //         let val = unsafe { Arc::from_raw(this.inner as *const T) };
+    //
+    //         loop {
+    //             match Arc::try_unwrap(val) {
+    //                 Ok(t) => return Some(t),
+    //                 Err(v) => val = v,
+    //             }
+    //
+    //             thread::yield_now();
+    //         }
+    //     }
+    // }
+
+    // TODO: pub fn as_inner()?
 }
 
-impl<T: Pointer> Drop for HazardGuard<T> {
+impl<T> Drop for SharedArc<T> {
     #[inline]
     fn drop(&mut self) {
         // 1) Drop responsibility might have been transfered to us and we have either:
@@ -141,7 +230,7 @@ impl<T: Pointer> Drop for HazardGuard<T> {
         unsafe {
             if self.slot.is_null() {
                 if !registry().try_transfer_drop_responsibility(self.inner) {
-                    drop(T::from_raw(self.inner))
+                    drop(Arc::from_raw(self.inner as *const T));
                 }
             } else {
                 let slot = &(*self.slot);
@@ -149,11 +238,54 @@ impl<T: Pointer> Drop for HazardGuard<T> {
                 if slot.swap(0, Ordering::SeqCst) != self.inner {
                     // Here we know that drop responsibility has been transfered to us
                     if !registry().try_transfer_drop_responsibility(self.inner) {
-                        drop(T::from_raw(self.inner))
+                        drop(Arc::from_raw(self.inner as *const T));
                     }
                 }
             }
         }
+    }
+}
+
+// impl<T> From<T> for SharedArc<T> {
+//     fn from(val: T) -> SharedArc<T> {
+//         unimplemented!()
+//     }
+// }
+
+// impl<T> From<Arc<T>> for SharedArc<T> {
+//     fn from(val: Arc<T>) -> SharedArc<T> {
+//         unimplemented!()
+//     }
+// }
+
+impl<T> From<T> for SharedArc<T>
+where
+    T: Into<Option<Arc<T>>>,
+{
+    fn from(val: T) -> SharedArc<T> {
+        let raw = match val.into() {
+            None => 0,
+            Some(val) => Arc::into_raw(val) as usize,
+        };
+        SharedArc::new(raw, ptr::null())
+    }
+}
+
+impl<T> Into<Option<Arc<T>>> for SharedArc<T> {
+    fn into(self) -> Option<Arc<T>> {
+        self.clone_inner()
+    }
+}
+
+impl<'a, T> Into<Option<Arc<T>>> for &'a SharedArc<T> {
+    fn into(self) -> Option<Arc<T>> {
+        self.clone_inner()
+    }
+}
+
+impl<'a, T> Into<Option<&'a Arc<T>>> for &'a SharedArc<T> {
+    fn into(self) -> Option<&'a Arc<T>> {
+        self.as_ref()
     }
 }
 
@@ -176,7 +308,7 @@ fn try_extend_registry(ptr: &AtomicPtr<Registry>) {
     let instance = Box::into_raw(Box::new(Registry::default()));
 
     if !ptr.compare_exchange(0 as *mut Registry, instance, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-        // Some other thread has successfully extended Registry. 
+        // Some other thread has successfully extended Registry.
         // It is our job now to delete `instance` we have just created.
         unsafe { drop(Box::from_raw(instance)) }
     }

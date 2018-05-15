@@ -1,8 +1,9 @@
 extern crate atomic;
 extern crate crossbeam;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use atomic::hazard_cell::HazardCell;
+use atomic::AtomicArc;
 
 static DROP_PER_THREAD: usize = 1000000;
 static N_THREADS: usize = 8;
@@ -17,9 +18,9 @@ impl Drop for Foo {
     }
 }
 
-fn work(cell: &HazardCell<Box<Foo>>) {
+fn work(cell: &AtomicArc<Foo>) {
     for _ in 0..DROP_PER_THREAD {
-        let new_data = Box::new(Foo(AtomicUsize::new(0)));
+        let new_data = Arc::new(Foo(AtomicUsize::new(0)));
         cell.replace(new_data);
     }
 }
@@ -27,7 +28,7 @@ fn work(cell: &HazardCell<Box<Foo>>) {
 #[test]
 fn test_replace() {
 
-    let element = HazardCell::new(Box::new(Foo(AtomicUsize::new(0))));
+    let element = AtomicArc::new(Arc::new(Foo(AtomicUsize::new(0))));
 
     crossbeam::scope(|s| {
         for _ in 0..N_THREADS {
