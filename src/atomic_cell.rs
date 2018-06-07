@@ -5,6 +5,9 @@ use std::ptr;
 use std::slice;
 use std::sync::atomic::{self, AtomicBool, Ordering};
 
+// TODO: fn try_set(), which tries to insert a Box into AtomicCell<Option<Box<T>>
+// TODO: maybe a bunch of functions for AtomicCell<Option<_>>?
+
 /// A thread-safe mutable memory location.
 ///
 /// This type is equivalent to [`Cell`], except it can also be shared among multiple threads.

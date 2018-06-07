@@ -14,7 +14,13 @@ struct Node<T> {
 
 impl<T> Drop for Node<T> {
     fn drop(&mut self) {
-        // TODO: Drop the chain of nodes iteratively rather than recursively.
+        let mut next = self.next.replace(None);
+        loop {
+            next = match next.as_ref() {
+                None => break,
+                Some(n) => n.next.replace(None),
+            };
+        }
     }
 }
 
@@ -41,7 +47,7 @@ impl<T> Stack<T> {
 
             match self.head.compare_and_set(&head, new) {
                 Ok(()) => break,
-                Err(n) => new = n.unwrap(), // TODO: eliminate this unwrap
+                Err(n) => new = n.unwrap(),
             }
         }
     }
@@ -54,7 +60,7 @@ impl<T> Stack<T> {
                 None => return None,
                 Some(h) => {
                     if self.head.compare_and_set(&head, h.next.get()).is_ok() {
-                        // TODO: h.wait_unwrap().value.into_inner()
+                        h.next.set(None);
                         return h.value.lock().take();
                     }
                 }
@@ -65,12 +71,9 @@ impl<T> Stack<T> {
 
 fn main() {
     const N: usize = 1_000_000;
-    const T: usize = 1;
-    // const T: usize = 8;
+    const T: usize = 8;
 
     let s = Stack::new();
-    // let s = crossbeam::sync::TreiberStack::new();
-
     crossbeam::scope(|scope| {
         for _ in 0..T {
             scope.spawn(|| {
@@ -78,8 +81,9 @@ fn main() {
                     s.push(i);
                 }
                 for i in 0 .. N / T {
-                    println!("pop {}", i);
-                    s.pop().unwrap();
+                    while s.pop().is_none() {
+                        std::thread::yield_now();
+                    }
                 }
             });
         }
