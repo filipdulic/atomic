@@ -182,10 +182,8 @@ impl<T> SharedArc<T> {
     // TODO: try_unwrap() and wait_unwrap()
 
     fn slot(&self) -> Option<&AtomicUsize> {
-        if self.slot.is_null() {
-            None
-        } else {
-            unsafe { Some(&*self.slot) }
+        unsafe {
+            self.slot.as_ref()
         }
     }
 }
@@ -205,11 +203,15 @@ impl<T> Drop for SharedArc<T> {
             }
         }
 
-        if hazard::registry().destroy_object(self.object as usize) {
-            unsafe {
-                drop(Arc::from_raw(self.object));
+        #[cold]
+        fn destroy<T>(object: *const T) {
+            if hazard::registry().destroy_object(object as usize) {
+                unsafe {
+                    drop(Arc::from_raw(object));
+                }
             }
         }
+        destroy(self.object)
     }
 }
 
